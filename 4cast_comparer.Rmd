@@ -14,6 +14,7 @@ resource_files:
 
 ```{r, include=FALSE}
 library(tidyverse)
+start_year <- today()-years(1) #get rid of -1 once we have this years data
 library(here)
 library(readxl)
 library(janitor)
@@ -304,7 +305,7 @@ reactive_tbbl2 <- reactive({
  internal_vs_stokes|>
     unnest(data)|>
     mutate(date=ymd(paste(year,"06","15", sep="-")))|>
-    filter(date>today())|>
+    filter(date>start_year)|>
     select(-year)|>
     pivot_longer(cols=c(stokes_cut, internal), names_to = "series", values_to = "value")|>
     full_join(lfs_data)|>
