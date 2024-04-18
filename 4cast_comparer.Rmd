@@ -226,7 +226,7 @@ Comparison with internal employment forecast
 Column
 -------------------------------------
     
-### % change from internal to stokes:  **CLICK** on row to choose industry
+### Degree of difference between internal and stokes:  **CLICK** on row to choose industry
     
 ```{r}
 
