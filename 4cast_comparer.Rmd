@@ -22,6 +22,7 @@ library(conflicted)
 library(htmlwidgets) #for function onRender
 conflicts_prefer(dplyr::filter)
 options(scipen = 999)
+min_abs_original <- 10
 #functions-----------------------
 my_dt <- function(tbbl) {
   DT::datatable(tbbl,
@@ -83,14 +84,11 @@ Inputs {.sidebar data-width=400}
 -------------------------------------
 
 *  This app allows one to visualize what has changed between Stokes cuts, and how employment compares with our internal forecast.
-*  Here we are looking at the difference between the first and final occupation cut of 2023.
-*  Note that the data series (rows) differ in several orders of magnitude in terms of their minimum absolute value.
-*  For series with a large $\min(|original~value|)$, we calculate the percentage change between the cuts:
-$$change=\frac{new~value-original~value}{|original~value|}\times100$$
-*  For series with a small $min(|original~value|)$, we subtract the original value from the new value:
-$$change = new~value - original~value$$
-*  Doing so puts all series on a similar scale, allowing us to use a heatmap to identify the significant changes between cuts.
+*  The heatmap on this page illustrates the degree of difference between the first and final occupation cut of 2023.
+*  Dark colours indicate little difference between cuts:  yellow indicates a (relatively) large difference.
+*  You can zoom in by highlighting (click-dragging) a region of the heatmap. 
 *  You can **CLICK** on a row in the heatmap to see the underlying data.
+*  To zoom back out double click anywhere in the heatmap.
 
 
 ```{r}
@@ -126,16 +124,6 @@ selectInput(
 )
 })
 
-numericInput(
-  "minimum",
-  "min(|original value|) threshold",
-  10,
-  min = 1,
-  max = 100,
-  step = 1
-)
-
-
 reactive_base <- reactive({
   if(length(unique(which_file()$Description))==1 & length(unique(which_file()$Industry))>1){
     temp <- which_file()|>
@@ -153,18 +141,18 @@ reactive_base <- reactive({
     ungroup()|>
     select(-Variable, -`Geographic Area`, -NOC)|>
     group_by(slice)|>
-    mutate(original=if_else(min(abs(original_value)) < input$minimum, "small", "large"),
+    mutate(original=if_else(min(abs(original_value)) < min_abs_original, "small", "large"),
            change=if_else(original=="small",
                           new_value-original_value,
                           (new_value-original_value)/abs(original_value)*100),
-           change=round(change,3)
-           )
+           degree_of_difference=round(log10(abs(change)+1), 3)
+          )
 })
 
 reactive_tbbl <- reactive({
   reactive_base()|>
-  select(slice, year, change)|>
-  pivot_wider(names_from = "year", values_from = "change")|>
+  select(slice, year, degree_of_difference)|>
+  pivot_wider(names_from = "year", values_from = "degree_of_difference")|>
   column_to_rownames("slice")
  })
 
@@ -189,10 +177,9 @@ plotly::renderPlotly({
   req(input$file)
   req(input$variable)
   req(input$geographic_area)
-  req(input$minimum)
-    heatmaply::heatmaply(reactive_tbbl(),
+  heatmaply::heatmaply(reactive_tbbl(),
                          dendrogram=FALSE,
-                         key.title="Change between cuts",
+                         key.title="Degree of Difference",
                          fontsize_row = 8,
                          showticklabels = c(TRUE, FALSE))|>
     plotly::config(displayModeBar = FALSE)|>
@@ -228,7 +215,7 @@ DT::renderDT({
   req(input$point)
   reactive_base()|>
     filter(slice==rev(rownames(reactive_tbbl()))[input$point$y])|>
-    select(year, new_value, original_value, change)|>
+    select(year, new_value, original_value, degree_of_difference)|>
     DT::datatable( rownames = FALSE)
 })
 ```
@@ -253,13 +240,14 @@ function(el, x) {
 
 temp <- internal_vs_stokes|>
   unnest(data)|>
-  mutate(stokes_percent_change=round((stokes_cut/internal-1)*100,2))|>
-  select(industry, year, stokes_percent_change)|>
+  mutate(change=(stokes_cut/internal-1)*100,
+         degree_of_difference=round(log10(abs(change)+1), 3))|>
+  select(industry, year, degree_of_difference)|>
   filter(year>2023)|>
-  pivot_wider(id_cols = industry, names_from = "year", values_from = "stokes_percent_change")|>
+  pivot_wider(id_cols = industry, names_from = "year", values_from = "degree_of_difference")|>
   column_to_rownames("industry")
 
-  heatmaply::heatmaply(temp, dendrogram=FALSE, key.title="% change", showticklabels = c(TRUE, FALSE))|>
+  heatmaply::heatmaply(temp, dendrogram=FALSE, key.title="Degree of Difference", showticklabels = c(TRUE, FALSE))|>
   onRender(js2)
 ```
  
