@@ -158,6 +158,9 @@ reactive_tbbl <- reactive({
 
 ```
  
+ Source code: [![github logo](github.png){width=100px}](https://github.com/bcgov/4cast_viewer_comparison){target='_blank'}
+ 
+ 
 Column {data-width=550}
 -------------------------------------
     

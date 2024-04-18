@@ -10,22 +10,9 @@ If you have bcgovr installed and you use RStudio, click the 'Insert BCDevex Badg
 
 ### Usage
 
-Describe data being used (links), and how to run. Eg:
-
-There are four core scripts that are required for the analysis, they need to be run in order:
-
--   01\_clean.R
--   02\_analysis.R
--   03\_visualize.R
--   04\_output.R
-
-#### Example
-
-This is a basic example which shows you how to solve a common problem:
-
-``` r
-## basic example code
-```
+1) place files in appropriate folders
+2) source the file 01_pre_process.R
+3) run document 4cast_comparer.Rmd
 
 ### Project Status
 
