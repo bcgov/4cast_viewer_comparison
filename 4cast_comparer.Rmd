@@ -20,6 +20,7 @@ library(readxl)
 library(janitor)
 library(conflicted)
 library(htmlwidgets) #for function onRender
+library(plotly)
 conflicts_prefer(dplyr::filter)
 options(scipen = 999)
 min_abs_original <- 10
@@ -75,6 +76,8 @@ cagrs <- read_rds(here("out","cagrs.rds"))
 mapping <- read_csv(here("data","lmo64_agg_stokes_mapping.csv"))
 lfs_data <- read_csv(here("out","lfs_data.csv"))
 files <- sort(unique(joined$which_file), decreasing = TRUE)
+occ_shares <- read_csv(here("out","occ_shares.csv"))
+occ_shares_weighted <- read_csv(here("out","occ_shares_weighted.csv"))
 ```
 
 Comparison with previous cut
@@ -334,7 +337,59 @@ Mapping from LMO industries to Stokes industries
 my_dt(mapping)
 ```
 
+Occupation Shares
+=====================================================
 
 
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Shares of total employment: LFS vs. Stokes
+
+```{r}
+
+js3 <- "
+function(el, x) {
+  el.on('plotly_click', function(d) {
+    var point = d.points[0];
+    Shiny.setInputValue('point3', {text: point.text});
+  });
+}"
+renderPlotly({
+  plt <- ggplot(occ_shares_weighted, aes(lfs,
+                       stokes,
+                       text=Description))+
+  geom_abline(slope = 1, intercept = 0, colour="white", lwd=2)+
+  geom_point(alpha=.2)+
+  scale_x_continuous(trans="log10", labels = scales::percent)+
+  scale_y_continuous(trans="log10", labels = scales::percent)+
+  labs(x="Shares based on the Labour Force Survey",
+       y="Shares based on Stokes forecast"
+       )
+  ggplotly(plt, tooltip = "text")|>
+    onRender(js3)
+})
+```
 
 
+Column {data-width=350}
+-----------------------------------------------------------------------
+
+### `r renderUI({input$point3$text})`
+
+```{r}
+renderPlotly({
+  req(input$point3)
+  plt <- occ_shares|>
+    filter(Description==input$point3$text)|>
+    ggplot(aes(year, 
+               share, 
+               colour=sample,
+              ))+
+    geom_line()+
+    scale_y_continuous(labels=scales::percent)+
+    coord_cartesian(ylim = c(0, NA))+
+    labs(colour=NULL)
+  ggplotly(plt)
+})
+```
