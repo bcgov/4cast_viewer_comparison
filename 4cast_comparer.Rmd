@@ -10,6 +10,8 @@ resource_files:
 - out/internal_vs_stokes.rds
 - data/lmo64_agg_stokes_mapping.csv
 - out/lfs_data.csv
+- out/occ_shares.csv
+- out/occ_shares_weighted.csv
 ---
 
 ```{r, include=FALSE}
