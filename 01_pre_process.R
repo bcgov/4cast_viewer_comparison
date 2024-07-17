@@ -103,6 +103,7 @@ lfs_files <- list.files(here("data"), pattern = "lfsstat4digNAICS")
 lfs_data <- vroom::vroom(here("data", lfs_files))|>
   na.omit()|>
   filter(LF_STAT=="Employed")|>
+  mutate(NAICS_5=as.numeric(NAICS_5))|>
   inner_join(naics_to_lmo_mapping, by=c("NAICS_5"="naics"))|>
   group_by(lmo_ind_code, lmo_detailed_industry, SYEAR, SMTH)|>
   summarise(value=sum(`_COUNT_`, na.rm=TRUE))|>

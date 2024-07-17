@@ -166,7 +166,7 @@ reactive_tbbl <- reactive({
  Source code: [![github logo](github.png){width=100px}](https://github.com/bcgov/4cast_viewer_comparison){target='_blank'}
  
  
-Column {data-width=550}
+Column {data-width=600}
 -------------------------------------
     
 ### 
@@ -195,7 +195,7 @@ plotly::renderPlotly({
 })
 ```
 
-Column {data-width=450}
+Column {data-width=400}
 -------------------------------------
 
 ### Difference for `r renderUI({input$variable})`
@@ -205,11 +205,21 @@ plotly::renderPlotly({
   req(input$point)
   plt <- reactive_base()|>
     filter(slice==rev(rownames(reactive_tbbl()))[input$point$y])|>
-    ungroup()|>
-    select(year, new_value, original_value)|>
-    pivot_longer(cols = -year)|>
+    mutate(new_10_cagr=((tail(new_value, n=1)-head(new_value, n=1)+abs(head(new_value, n=1)))/(abs(head(new_value, n=1))))^(.1)-1,
+           original_10_cagr=((tail(original_value, n=1)-head(original_value, n=1)+abs(head(original_value, n=1)))/(abs(head(original_value, n=1))))^(.1)-1,
+           new_10_cagr=scales::percent(new_10_cagr, accuracy=.1),
+           original_10_cagr=scales::percent(original_10_cagr, accuracy=.1)
+          )|>
+    pivot_longer(cols = c(new_value, original_value))|>
     mutate(year=as.numeric(year))|>
-    ggplot(aes(year,value, colour=name))+
+    ggplot(aes(year, 
+               value, 
+               colour=name,
+               text=paste0(
+                 "Original 10 year CAGR: ",
+                 original_10_cagr,
+                 "\n New 10 year CAGR: ",
+                 new_10_cagr)))+
     geom_line()+
     labs(title=rev(rownames(reactive_tbbl()))[input$point$y])
   plotly::ggplotly(plt)
@@ -223,8 +233,8 @@ DT::renderDT({
   req(input$point)
   reactive_base()|>
     filter(slice==rev(rownames(reactive_tbbl()))[input$point$y])|>
-    select(year, new_value, original_value, degree_of_difference)|>
-    DT::datatable( rownames = FALSE)
+    select(year, new_value, original_value)|>
+    DT::datatable(rownames = FALSE)
 })
 ```
 
@@ -319,6 +329,7 @@ reactive_lfs_last_year <- reactive({
 plotly::renderPlotly({
   req(input$point2) 
   plt <- ggplot(reactive_tbbl2(), aes(date, value, colour=series))+
+    geom_vline(xintercept = as.numeric(floor_date(today(), unit="year")-months(1)), colour="white", lwd=1)+
     geom_line(alpha=.5)+
     geom_line(data=reactive_lfs_last_year())+
     scale_y_continuous(labels = scales::comma)+
@@ -341,6 +352,13 @@ my_dt(mapping)
 
 Occupation Shares
 =====================================================
+
+Inputs {.sidebar}
+-------------------------------------
+
+* The scatterplot to the right gives an indication of a "jump" between the historic shares and the forecast shares
+* The white diagonal line indicates no jump, and the further you are from the line the larger the jump in share of total employment.
+* You can **click** on a point to see the underlying time series of employment shares.
 
 
 Column {data-width=650}
