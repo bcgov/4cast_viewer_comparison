@@ -1,4 +1,4 @@
-start_year <- lubridate::year(lubridate::today())-1 #get rid of -1 once we have this years data
+start_year <- lubridate::year(lubridate::today()) #get rid of -1 once we have this years data
 start_of_current_month <- lubridate::ym(tsibble::yearmonth(lubridate::today()))
 #' NOTE: the files that are being compared need to be quite similar:
 #' they need to have identical file names (between versions)
@@ -34,7 +34,7 @@ fix_noc <- function(tbbl){
 # the program---------------------------
 
 joined <- tibble(which_file=list.files(here("data","occupation_new")))|>
-  mutate(new_data=map(here("data","occupation_new", which_file), read_excel, skip=3, na="NA", col_types=c(rep("text",5), rep("numeric",13))),
+  mutate(new_data=map(here("data","occupation_new", which_file), read_excel, skip=3, na="NA", col_types=c(rep("text",5), rep("numeric",14))),
          old_data=map(here("data","occupation_old", which_file), read_excel, skip=3, na="NA", col_types=c(rep("text",5), rep("numeric",13))),
          new_data=map(new_data, pivot_longer, cols=starts_with("2"), names_to="year", values_to="new_value"),
          old_data=map(old_data, pivot_longer, cols=starts_with("2"), names_to="year", values_to="original_value"),
