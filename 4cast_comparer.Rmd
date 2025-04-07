@@ -2,6 +2,7 @@
 title: "4cast comparer"
 output:
   flexdashboard::flex_dashboard:
+    source_code: https://github.com/bcgov/4cast_viewer_comparison
     orientation: columns
 runtime: shiny
 resource_files:
@@ -157,15 +158,15 @@ reactive_base <- reactive({
 reactive_tbbl <- reactive({
   reactive_base()|>
   select(slice, year, degree_of_difference)|>
+  ungroup()|>
+  mutate(slice=fct_reorder(slice, degree_of_difference))|>
   pivot_wider(names_from = "year", values_from = "degree_of_difference")|>
   column_to_rownames("slice")
  })
 
 ```
  
- Source code: [![github logo](github.png){width=100px}](https://github.com/bcgov/4cast_viewer_comparison){target='_blank'}
- 
- 
+
 Column {data-width=600}
 -------------------------------------
     

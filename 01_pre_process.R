@@ -1,4 +1,4 @@
-start_year <- lubridate::year(lubridate::today()) #get rid of -1 once we have this years data
+start_year <- lubridate::year(lubridate::today())-1 #get rid of -1 once we have this years data
 start_of_current_month <- lubridate::ym(tsibble::yearmonth(lubridate::today()))
 #' NOTE: the files that are being compared need to be quite similar:
 #' they need to have identical file names (between versions)
