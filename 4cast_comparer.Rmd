@@ -5,19 +5,10 @@ output:
     source_code: https://github.com/bcgov/4cast_viewer_comparison
     orientation: columns
 runtime: shiny
-resource_files:
-- out/joined.rds
-- out/cagrs.rds
-- out/internal_vs_stokes.rds
-- data/lmo64_agg_stokes_mapping.csv
-- out/lfs_data.csv
-- out/occ_shares.csv
-- out/occ_shares_weighted.csv
 ---
 
 ```{r, include=FALSE}
 library(tidyverse)
-start_year <- today()-years(1) #get rid of -1 once we have this years data
 library(here)
 library(readxl)
 library(janitor)
@@ -26,7 +17,6 @@ library(htmlwidgets) #for function onRender
 library(plotly)
 conflicts_prefer(dplyr::filter)
 options(scipen = 999)
-min_abs_original <- 10
 #functions-----------------------
 my_dt <- function(tbbl) {
   DT::datatable(tbbl,
@@ -50,63 +40,67 @@ my_dt <- function(tbbl) {
                 )
   )
 }
+symmetric_change <- function(old, new) {
+  denom <- (old + new) / 2
+  result <- ifelse(denom == 0 & new != old, 200 * sign(new - old),
+                   ifelse(denom == 0, 0, (new - old) / denom * 100))
+  return(result)
+}
+percent_level_change <- function(tbbl){
+  old <- sum(tbbl$original_value)
+  new <- sum(tbbl$new_value)
+  symmetric_change(old, new)
+}
 
-cagr_plot <- function(tbbl, xvar, yvar, highlight_industry){
-  filtered <- tbbl|>
-    filter(industry==highlight_industry)
-  plt <- ggplot(cagrs, aes({{  xvar  }}, {{  yvar  }},
-                         text=paste0("Industry: ",
-                                     industry,
-                                     "\n Internal CAGR = ",
-                                     scales::percent({{  xvar  }}, accuracy = .1),
-                                     "\n Stokes CAGR = ",
-                                     scales::percent({{  yvar  }}, accuracy = .1))))+
-  geom_abline(slope=1, intercept = 0, colour="white", lwd=1.5)+
-  geom_point(data=filtered, size=4, colour="red", alpha=.5)+    
-  geom_point(alpha=.5)+
-  scale_x_continuous(labels=scales::percent)+
-  scale_y_continuous(labels=scales::percent)+
-  labs(x="internal forecast",
-       y="stokes forecast")
-  plotly::ggplotly(plt, tooltip="text")
+how_big <- function(tbbl){
+  mean(tbbl$new_value)
+}
+
+percent_cagr_change <- function(tbbl){
+  tbbl <- tbbl|>
+    mutate(year=as.numeric(year))|>
+    arrange(year)
+  new <- (last(tbbl$new_value)/first(tbbl$new_value))^(1/(last(tbbl$year)-first(tbbl$year)))
+  old <-(last(tbbl$original_value)/first(tbbl$original_value))^(1/(last(tbbl$year)-first(tbbl$year)))
+  symmetric_change(old, new)
 }
 ```
 
 ```{r}
-joined <- read_rds(here("out","joined.rds"))
-internal_vs_stokes <- read_rds(here("out","internal_vs_stokes.rds"))
-cagrs <- read_rds(here("out","cagrs.rds"))
-mapping <- read_csv(here("data","lmo64_agg_stokes_mapping.csv"))
-lfs_data <- read_csv(here("out","lfs_data.csv"))
-files <- sort(unique(joined$which_file), decreasing = TRUE)
-occ_shares <- read_csv(here("out","occ_shares.csv"))
-occ_shares_weighted <- read_csv(here("out","occ_shares_weighted.csv"))
+new_vs_old <- read_rds(here("out","new_vs_old.rds"))
+files <- sort(unique(new_vs_old$which_file), decreasing = TRUE)
+new_vs_fcast <- read_rds(here("out","new_vs_fcast.rds"))
+errors <- read_rds(here("out","errors.rds"))
 ```
 
-Comparison with previous cut
-=====================================  
+# Comparison with previous cut
 
-Inputs {.sidebar data-width=400}
--------------------------------------
+## Inputs {.sidebar data-width="300"}
 
-*  This app allows one to visualize what has changed between Stokes cuts, and how employment compares with our internal forecast.
-*  The heatmap on this page illustrates the degree of difference between the first and final occupation cut of 2023.
-*  Dark colours indicate little difference between cuts:  yellow indicates a (relatively) large difference.
-*  You can zoom in by highlighting (click-dragging) a region of the heatmap. 
-*  You can **CLICK** on a row in the heatmap to see the underlying data.
-*  To zoom back out double click anywhere in the heatmap.
+-   This app allows for two comparisons:
 
+1)  between two Stokes occupational forecasts.
+2)  between the current Stokes occupational employment forecast and historic LFS data.
+
+-   For the chart to the immediate left, we create 3 summary statistics for the selected data
+
+1)  The percentage difference in the mean level (across 10 years)
+2)  The percentage difference in 10 year growth rates
+3)  The size of the "slice" of data (i.e. the size of industry or occupation.)
+
+-   For points close the origin, Stokes has not made changes that affect either the level or the growth rate.
+-   For points far away from the origin, there has been a substantial change (in percentage terms.)
 
 ```{r}
 selectInput(
   "file",
   "Select an excel file to compare",
   files,
-  selected = files[1]
+  selected = files[4]
 )
 
 which_file <- reactive({
-  temp <- joined|>
+  temp <- new_vs_old|>
     filter(which_file==input$file)|>
     pull(joined)
   temp[[1]]
@@ -130,13 +124,19 @@ selectInput(
 )
 })
 
+checkboxInput("origin", "Are you Sazid? (should y axis include the origin)", value = FALSE)
+
+#reactive elements------------------------------
+
 reactive_base <- reactive({
   if(length(unique(which_file()$Description))==1 & length(unique(which_file()$Industry))>1){
     temp <- which_file()|>
+      filter(Industry!="All industries")|>
       rename(slice = Industry)|>
       select(-Description)
   }else{
     temp <- which_file()|>
+      filter(Description!="Total")|>
       rename(slice = Description)|>
       select(-Industry)
   }
@@ -146,31 +146,25 @@ reactive_base <- reactive({
            `Geographic Area`==input$geographic_area)|>
     ungroup()|>
     select(-Variable, -`Geographic Area`, -NOC)|>
-    group_by(slice)|>
-    mutate(original=if_else(min(abs(original_value)) < min_abs_original, "small", "large"),
-           change=if_else(original=="small",
-                          new_value-original_value,
-                          (new_value-original_value)/abs(original_value)*100),
-           degree_of_difference=round(log10(abs(change)+1), 3)
-          )
+    group_by(slice)
 })
 
 reactive_tbbl <- reactive({
   reactive_base()|>
-  select(slice, year, degree_of_difference)|>
-  ungroup()|>
-  mutate(slice=fct_reorder(slice, degree_of_difference))|>
-  pivot_wider(names_from = "year", values_from = "degree_of_difference")|>
-  column_to_rownames("slice")
- })
-
+    mutate(year=as.numeric(year))|>
+    filter(year >= max(year)-10)|>
+  group_by(slice)|>
+  nest()|>
+  mutate(percent_level_change=map_dbl(data, percent_level_change),
+         percent_cagr_change=map_dbl(data, percent_cagr_change),
+         mean_level=map_dbl(data, how_big))|>
+  unnest(data)
+})
 ```
- 
 
-Column {data-width=600}
--------------------------------------
-    
-### 
+## Column
+
+### `r renderUI({paste(input$geographic_area, input$variable, sep=": ")})`
 
 ```{r}
 
@@ -178,239 +172,156 @@ js <- "
 function(el, x) {
   el.on('plotly_click', function(d) {
     var point = d.points[0];
-    Shiny.setInputValue('point', {y: point.y});
+    Shiny.setInputValue('point', {text: point.text});
   });
 }"
 
 plotly::renderPlotly({
-  req(input$file)
   req(input$variable)
   req(input$geographic_area)
-  heatmaply::heatmaply(reactive_tbbl(),
-                         dendrogram=FALSE,
-                         key.title="Degree of Difference",
-                         fontsize_row = 8,
-                         showticklabels = c(TRUE, FALSE))|>
-    plotly::config(displayModeBar = FALSE)|>
-    onRender(js)
+  plt <- reactive_tbbl()|>
+  select(slice, starts_with("percent"), mean_level)|>
+  distinct()|>
+  ggplot(aes(percent_level_change,
+             percent_cagr_change,
+             size=mean_level,
+             alpha=mean_level,
+             colour=mean_level,
+             text=slice))+
+  geom_vline(xintercept = 0, colour="white", lwd=2)+
+  geom_hline(yintercept = 0, colour="white", lwd=2)+ 
+  geom_point()+
+  scale_colour_viridis_c()+
+  labs(x="Level Change (%)",
+       y="Growth Change (%)",
+       colour="Mean Level (new)")
+
+
+plotly::ggplotly(plt, tooltip = "text")|>
+     plotly::config(displayModeBar = FALSE)|>
+     onRender(js)
 })
 ```
 
-Column {data-width=400}
--------------------------------------
+## Column
 
-### Difference for `r renderUI({input$variable})`
+### `r renderUI({input$point$text})`
 
 ```{r}
 plotly::renderPlotly({
   req(input$point)
   plt <- reactive_base()|>
-    filter(slice==rev(rownames(reactive_tbbl()))[input$point$y])|>
-    mutate(new_10_cagr=((tail(new_value, n=1)-head(new_value, n=1)+abs(head(new_value, n=1)))/(abs(head(new_value, n=1))))^(.1)-1,
-           original_10_cagr=((tail(original_value, n=1)-head(original_value, n=1)+abs(head(original_value, n=1)))/(abs(head(original_value, n=1))))^(.1)-1,
-           new_10_cagr=scales::percent(new_10_cagr, accuracy=.1),
-           original_10_cagr=scales::percent(original_10_cagr, accuracy=.1)
-          )|>
+    filter(slice==input$point$text)|>
     pivot_longer(cols = c(new_value, original_value))|>
     mutate(year=as.numeric(year))|>
-    ggplot(aes(year, 
-               value, 
+    ggplot(aes(year,
+               value,
                colour=name,
-               text=paste0(
-                 "Original 10 year CAGR: ",
-                 original_10_cagr,
-                 "\n New 10 year CAGR: ",
-                 new_10_cagr)))+
+               text=slice))+
     geom_line()+
-    labs(title=rev(rownames(reactive_tbbl()))[input$point$y])
+    scale_y_continuous(labels=scales::comma)+
+    labs(x=NULL,y=NULL, colour=NULL)
+  
+  if(input$origin==TRUE){
+    plt <- plt+ 
+      expand_limits(y = 0)
+  }
+
   plotly::ggplotly(plt)
 })
 ```
 
-### The data:
+### `r renderUI({input$point$text})`
 
 ```{r}
-DT::renderDT({ 
+DT::renderDT({
   req(input$point)
-  reactive_base()|>
-    filter(slice==rev(rownames(reactive_tbbl()))[input$point$y])|>
-    select(year, new_value, original_value)|>
+  reactive_tbbl()|>
+    filter(slice==input$point$text)|>
+    ungroup()|>
+    select(-slice)|>
+    mutate(across(everything(), round, 2))|>
     DT::datatable(rownames = FALSE)
 })
 ```
 
-Comparison with internal employment forecast
-=====================================  
+# Comparison with ensemble forecast
 
-Column
--------------------------------------
-    
-### Degree of difference between internal and stokes:  **CLICK** on row to choose industry
-    
+## Inputs {.sidebar data-width="300"}
+
+-   On this page we compare the most recent Stokes forecast $S_t$ with an ensemble forecast $E_t$ based on LFS data since 2000.
+-   The ensemble forecast is based on 50/50 mixture of two component forecasts:
+
+1)  TSLM: Linear regression of employment on time.
+2)  ETS: [Exponential Smoothing](https://otexts.com/fpp3/expsmooth.html)
+
+-   We use two metrics to compare the stokes forecast with the ensemble forecast, which are displayed in the scatterplot to the right.
+
+$${\displaystyle \operatorname {RMSE} ={\sqrt {{\frac {1}{n}}\sum _{t=1}^{n}(S_{t}-E_{t})^{2}}}}$$
+
+$${\displaystyle {\text{SMAPE}}={\frac {1}{n}}\sum _{t=1}^{n}{\frac {|S_{t}-E_{t}|}{|E_{t}|+|S_{t}|}}}$$
+
+- Bottom left forecasts are similar, top right the forecasts differ.
+
+
+## Column
+
+### 
+
 ```{r}
 
 js2 <- "
 function(el, x) {
   el.on('plotly_click', function(d) {
     var point = d.points[0];
-    Shiny.setInputValue('point2', {y: point.y});
+    Shiny.setInputValue('point2', {text: point.text});
   });
 }"
 
-temp <- internal_vs_stokes|>
-  unnest(data)|>
-  mutate(change=(stokes_cut/internal-1)*100,
-         degree_of_difference=round(log10(abs(change)+1), 3))|>
-  select(industry, year, degree_of_difference)|>
-  filter(year>2023)|>
-  pivot_wider(id_cols = industry, names_from = "year", values_from = "degree_of_difference")|>
-  column_to_rownames("industry")
-
-  heatmaply::heatmaply(temp, dendrogram=FALSE, key.title="Degree of Difference", showticklabels = c(TRUE, FALSE))|>
-  onRender(js2)
-```
- 
-Column
-------------------------------------- 
- 
-### First five year CAGRs 
-    
-```{r}
 plotly::renderPlotly({
-req(input$point2)  
-cagr_plot(cagrs, internal_cagr_ffy, stokes_cagr_ffy, rev(rownames(temp))[input$point2$y])
-})  
-``` 
+ plt <- ggplot(errors, aes(rmse, smape, size=mean_value, colour=mean_value, alpha=mean_value, text=noc_5))+
+  geom_point()+
+  scale_x_continuous(trans="log10")+
+  scale_y_continuous(trans="log10")+
+  scale_colour_viridis_c()
 
-
-### Second five year CAGRs
-    
-```{r}
-plotly::renderPlotly({
-req(input$point2)    
-cagr_plot(cagrs, internal_cagr_sfy, stokes_cagr_sfy, rev(rownames(temp))[input$point2$y])
-})  
-```
-
-Column
-------------------------------------- 
-
-### Ten year CAGRs
-
-```{r}
-plotly::renderPlotly({
-req(input$point2)    
-cagr_plot(cagrs, internal_cagr_ty, stokes_cagr_ty, rev(rownames(temp))[input$point2$y])
-})  
-```
-
-### `r renderUI({rev(rownames(temp))[input$point2$y]})` relative to LFS Data
-
-
-```{r}
-reactive_tbbl2 <- reactive({
- internal_vs_stokes|>
-    unnest(data)|>
-    mutate(date=ymd(paste(year,"06","15", sep="-")))|>
-    filter(date>start_year)|>
-    select(-year)|>
-    pivot_longer(cols=c(stokes_cut, internal), names_to = "series", values_to = "value")|>
-    full_join(lfs_data)|>
-    filter(industry==rev(rownames(temp))[input$point2$y])
-})
-
-reactive_lfs_last_year <- reactive({
-  lfs_data|>
-    filter(industry==rev(rownames(temp))[input$point2$y])|>
-    group_by(industry)|>
-    mutate(value=zoo::rollmean(value, 12, align = "right", fill=NA),
-           series="12 month rolling mean of LFS")
-})
-
-plotly::renderPlotly({
-  req(input$point2) 
-  plt <- ggplot(reactive_tbbl2(), aes(date, value, colour=series))+
-    geom_vline(xintercept = as.numeric(floor_date(today(), unit="year")-months(1)), colour="white", lwd=1)+
-    geom_line(alpha=.5)+
-    geom_line(data=reactive_lfs_last_year())+
-    scale_y_continuous(labels = scales::comma)+
-    scale_colour_brewer(palette = "Dark2")+
-    labs(x=NULL,
-         y=NULL,
-         colour=NULL)
-  plotly::ggplotly(plt)|>
-    plotly::layout(legend = list(orientation = "h", x = 0.4, y = -0.2))
+  plotly::ggplotly(plt, tooltip = "text")|>
+     plotly::config(displayModeBar = FALSE)|>
+     onRender(js2)
 })
 ```
 
 
-Mapping from LMO industries to Stokes industries
-===================================== 
+## Column
+
+###  `r renderUI({input$point2$text})`
 
 ```{r}
-my_dt(mapping)
-```
-
-Occupation Shares
-=====================================================
-
-Inputs {.sidebar}
--------------------------------------
-
-* The scatterplot to the right gives an indication of a "jump" between the historic shares and the forecast shares
-* The white diagonal line indicates no jump, and the further you are from the line the larger the jump in share of total employment.
-* You can **click** on a point to see the underlying time series of employment shares.
-
-
-Column {data-width=650}
------------------------------------------------------------------------
-
-### Shares of total employment: LFS vs. Stokes
-
-```{r}
-
-js3 <- "
-function(el, x) {
-  el.on('plotly_click', function(d) {
-    var point = d.points[0];
-    Shiny.setInputValue('point3', {text: point.text});
-  });
-}"
-renderPlotly({
-  plt <- ggplot(occ_shares_weighted, aes(lfs,
-                       stokes,
-                       text=Description))+
-  geom_abline(slope = 1, intercept = 0, colour="white", lwd=2)+
-  geom_point(alpha=.2)+
-  scale_x_continuous(trans="log10", labels = scales::percent)+
-  scale_y_continuous(trans="log10", labels = scales::percent)+
-  labs(x="Shares based on the Labour Force Survey",
-       y="Shares based on Stokes forecast"
-       )
-  ggplotly(plt, tooltip = "text")|>
-    onRender(js3)
-})
-```
-
-
-Column {data-width=350}
------------------------------------------------------------------------
-
-### `r renderUI({input$point3$text})`
-
-```{r}
-renderPlotly({
-  req(input$point3)
-  plt <- occ_shares|>
-    filter(Description==input$point3$text)|>
-    ggplot(aes(year, 
-               share, 
-               colour=sample,
-              ))+
+plotly::renderPlotly({
+  req(input$point2$text)
+  plt <- new_vs_fcast|>
+    filter(noc_5==input$point2$text)|>
+    ggplot(aes(syear, .mean, colour=.model))+
     geom_line()+
-    scale_y_continuous(labels=scales::percent)+
-    coord_cartesian(ylim = c(0, NA))+
-    labs(colour=NULL)
-  ggplotly(plt)
+    labs(x=NULL, y=NULL, colour=NULL)+
+    scale_y_continuous(labels = scales::comma)
+  plotly::ggplotly(plt)
 })
 ```
+
+### `r renderUI({input$point2$text})`
+
+```{r}
+DT::renderDT({
+  req(input$point2$text)
+  new_vs_fcast|>
+    filter(noc_5==input$point2$text)|>
+    ungroup()|>
+    select(year=syear, value=.mean, series=.model)|>
+    mutate(value=round(value))|>
+    arrange(year)|>
+    DT::datatable(rownames = FALSE)
+})
+```
+
+

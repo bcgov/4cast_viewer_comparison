@@ -1,5 +1,3 @@
-start_year <- lubridate::year(lubridate::today())-1 #get rid of -1 once we have this years data
-start_of_current_month <- lubridate::ym(tsibble::yearmonth(lubridate::today()))
 #' NOTE: the files that are being compared need to be quite similar:
 #' they need to have identical file names (between versions)
 #' they need to have the same sheet names (between versions)
@@ -8,6 +6,9 @@ start_of_current_month <- lubridate::ym(tsibble::yearmonth(lubridate::today()))
 #' there is a fuzzyjoin around line 130... this should be checked manually.
 
 #libraries-----------------------
+
+library(vroom)
+library(fpp3)
 library(tidyverse)
 library(here)
 library(readxl)
@@ -17,23 +18,26 @@ library(conflicted)
 conflicts_prefer(dplyr::filter)
 conflicts_prefer(dplyr::lag)
 #functions--------------------
-get_cagrs <- function(tbbl, column){
-  val_now <- tbbl[[column]][tbbl$year==start_year]
-  val_fyfn <- tbbl[[column]][tbbl$year==start_year+5]
-  val_tyfn <- tbbl[[column]][tbbl$year==start_year+10]
-  cagr_ffy <- ((val_fyfn/val_now)^.2-1)
-  cagr_sfy <- ((val_tyfn/val_fyfn)^.2-1)
-  cagr_ty <- ((val_tyfn/val_now)^.1-1)
-  tibble(cagr_ffy=cagr_ffy, cagr_sfy=cagr_sfy,cagr_ty=cagr_ty)
+get_rmse <- function(tbbl){
+  sqrt(mean((tbbl$stokes-tbbl$`ensemble forecast`)^2))
 }
+
+get_smape <- function(tbbl){
+  mean(abs(tbbl$stokes-tbbl$`ensemble forecast`)/(abs(tbbl$stokes)+abs(tbbl$`ensemble forecast`)))
+}
+
+get_mean <- function(tbbl){
+  (mean(tbbl$stokes)+mean(tbbl$`ensemble forecast`))/2
+}
+
 fix_noc <- function(tbbl){
   tbbl|>
     mutate(NOC=str_replace_all(NOC, "o","#"))
 }
 
-# the program---------------------------
+# comparision between stokes cuts----------------------------
 
-joined <- tibble(which_file=list.files(here("data","occupation_new")))|>
+new_vs_old <- tibble(which_file=list.files(here("data","occupation_new")))|>
   mutate(new_data=map(here("data","occupation_new", which_file), read_excel, skip=3, na="NA", col_types=c(rep("text",5), rep("numeric",14))),
          old_data=map(here("data","occupation_old", which_file), read_excel, skip=3, na="NA", col_types=c(rep("text",5), rep("numeric",13))),
          new_data=map(new_data, pivot_longer, cols=starts_with("2"), names_to="year", values_to="new_value"),
@@ -44,142 +48,104 @@ joined <- tibble(which_file=list.files(here("data","occupation_new")))|>
   mutate(joined=map2(new_data, old_data, inner_join))|>
   select(-new_data, -old_data)
 
-write_rds(joined, here("out","joined.rds"))
+write_rds(new_vs_old, here("out","new_vs_old.rds"))
 
-############ internal_vs_stokes------------------------
+# comparison with an ensemble forecast---------------------
+noc_names <- read_excel(here("data","occupation_new", "employment_occupation.xlsx"), skip=3)|>
+  select(NOC, Description)|>
+  distinct()|>
+  mutate(noc_5=paste(NOC, Description, sep=": "))
 
-internal <- read_excel(here("data",
-                            "LMO 2024 edition LMIO industry employment forecast FINAL.xlsx"),
-                       skip=2)|>
-  select(-contains("CAGR"),-Note)|>
-  pivot_longer(cols=-industry, names_to="year", values_to = "internal")|>
-  separate(industry, into=c("lmo_ind_code", "industry"), sep=": ")|>
-  select(-lmo_ind_code)
-
-internal_total <- internal|>
-  group_by(year)|>
-  summarize(internal=sum(internal))|>
-  mutate(industry="All industries")
-
-internal <- full_join(internal, internal_total)|>
-  group_by(industry)|>
-  nest()|>
-  rename(internal=data)
-
-internal_vs_stokes <- read_excel(here("data","occupation_new", "employment_industry.xlsx"), skip = 3)|>
+stokes <- read_excel(here("data","occupation_new", "employment_occupation.xlsx"), skip=3)|>
   filter(`Geographic Area`=="British Columbia")|>
-  select(industry=Industry, starts_with("2"))|>
-  pivot_longer(cols=-industry, names_to = "year", values_to = "stokes_cut")|>
-  group_by(industry)|>
-  nest()|>
-  rename(stokes_cut=data)|>
-  fuzzyjoin::stringdist_join(internal)|>
-  rename(industry=industry.y)|>
+  pivot_longer(cols=starts_with("2"), names_to = "syear")|>
+  clean_names()|>
+  mutate(syear=as.numeric(syear))|>
+  filter(noc!="#T",
+         syear>max(syear)-10)|>
+  mutate(noc_5=paste(noc, description, sep=": "),
+         .model="stokes")|>
+  select(noc_5, syear, .model, .mean=value)
+
+lfs <- vroom(list.files(here("data", "LFS"), full.names = TRUE))|>
+  clean_names()|>
+  filter(lf_stat=="Employed",
+         !is.na(syear),
+         noc_5!="missi")|>
+  group_by(noc_5)|>
+  mutate(nobs=n())|>
   ungroup()|>
-  select(-industry.x)|>
-  mutate(data=map2(stokes_cut, internal, inner_join))|>
-  select(-stokes_cut, -internal)
+  filter(nobs==max(nobs))|>
+  select(-nobs)|>
+  mutate(noc_5=if_else(noc_5 %in% paste0("000",11:15), "00018", noc_5),
+         noc=paste0("#",noc_5))|>
+  group_by(syear, noc)|>
+  summarize(count=sum(count))|>
+  left_join(noc_names, by=c("noc"="NOC"))|>
+  select(-noc, -Description)
 
-write_rds(internal_vs_stokes, here("out","internal_vs_stokes.rds"))
+lfs_tsibble <- lfs|>
+  ungroup()|>
+  filter(syear<max(syear))|>
+  mutate(count=count/12)|>
+  tsibble(key = noc_5, index = syear)|>
+  fill_gaps(count=0L)
 
-# CAGR stuff----------------------------------------
+models <- lfs_tsibble %>%
+  model(
+    ets = ETS(count),
+    tslm=TSLM(count~trend())
+  )
 
-cagrs <- internal_vs_stokes|>
-  mutate(internal=map(data, get_cagrs, "internal"),
-         stokes=map(data, get_cagrs, "stokes_cut")
-         )|>
-  select(-data)|>
-  unnest(internal, names_sep = "_")|>
-  unnest(stokes, names_sep = "_")
+fcasts <- models %>%
+  forecast(h = "10 years")|>
+  tibble()|>
+  mutate(.mean=if_else(.mean<0, 0, .mean))|>
+  select(-count)
 
-write_rds(cagrs, here("out","cagrs.rds"))
+ensemble_fcasts <- fcasts|>
+  group_by(noc_5, syear)|>
+  summarize(.mean=mean(.mean),
+            .model="ensemble forecast")
 
-# comparing to LFS data-----------------------------------
+lfs <- lfs_tsibble|>
+  rename(.mean=count)|>
+  mutate(.model="LFS")
 
-naics_to_lmo_mapping <- read_csv(here("data","tidy_2024_naics_to_lmo.csv"))
+new_vs_fcast <- bind_rows(ensemble_fcasts, lfs, stokes)
 
-lfs_files <- list.files(here("data"), pattern = "lfsstat4digNAICS")
-
-lfs_data <- vroom::vroom(here("data", lfs_files))|>
+errors <- new_vs_fcast|>
+  pivot_wider(names_from = ".model", values_from = ".mean")|>
+  select(-LFS)|>
   na.omit()|>
-  filter(LF_STAT=="Employed")|>
-  mutate(NAICS_5=as.numeric(NAICS_5))|>
-  inner_join(naics_to_lmo_mapping, by=c("NAICS_5"="naics"))|>
-  group_by(lmo_ind_code, lmo_detailed_industry, SYEAR, SMTH)|>
-  summarise(value=sum(`_COUNT_`, na.rm=TRUE))|>
-  mutate(date=ym(paste(SYEAR, SMTH, sep="/")),
-         series="LFS Data")|>
-  ungroup()|>
-  select(-SYEAR,-SMTH)|>
-  filter(date<start_of_current_month)|>
-    select(industry=lmo_detailed_industry, value, series, date)
+  group_by(noc_5)|>
+  nest()|>
+  mutate(rmse=map_dbl(data, get_rmse),
+         smape=map_dbl(data, get_smape),
+         mean_value=map_dbl(data, get_mean)
+         )|>
+  arrange(desc(mean_value))
 
-lfs_data_totals <- lfs_data|>
-  group_by(date, series)|>
-  summarize(value=sum(value))|>
-  mutate(industry="Total")
+write_rds(new_vs_fcast, here("out","new_vs_fcast.rds"))
+write_rds(errors, here("out","errors.rds"))
 
-lfs_data <- full_join(lfs_data, lfs_data_totals)
-
-write_csv(lfs_data, here("out","lfs_data.csv"))
-
-#occupation shares-------------------
-
-stokes_emp_occ <- read_excel(here("data",
-                                  "occupation_new",
-                                  "employment_occupation.xlsx"), skip=3)|>
-  filter(`Geographic Area`=="British Columbia",
-         NOC!="#T")|>
-  mutate(Description=if_else(str_detect(Description, "Seniors"),
-                             "Senior managers - public and private sector",
-                             Description))|>
-  select(Description, starts_with("2"))|>
-  pivot_longer(cols=starts_with("2"), names_to = "year", values_to = "count")|>
-  mutate(year=as.numeric(year),
-         sample="stokes")|>
-  filter(year >= year(today()))|>
-  group_by(year)|>
-  mutate(share=count/sum(count))|>
-  select(-count)|>
-  group_by(Description, sample, .add = FALSE)|>
-  mutate(weight = .5^(year-max(year)+1)/sum(.5^(year-max(year)+1)))
-
-
-
-lfs_emp_occ <- read_excel(here("data",
-                               "Labour force status for 5 digit NOC 2014-2023.xlsx"),
-                          skip=3,
-                          sheet = "Employed")|>
-  filter(`Noc 5`!="Total")|>
-  select(-`Noc 5`)|>
-  rename(Description=`Class Title`)|>
-  pivot_longer(cols=starts_with("2"), names_to = "year", values_to = "count")|>
-  mutate(Description=if_else(str_detect(Description, "Senior managers|Senior government managers"),
-                             "Senior managers - public and private sector",
-                             Description))|>
-  group_by(Description, year)|>
-  summarize(count=sum(count, na.rm = TRUE))|>
-  mutate(year=as.numeric(year))|>
-  group_by(year)|>
-  mutate(share=count/sum(count, na.rm=TRUE),
-         sample="lfs")|>
-  select(-count)|>
-  group_by(Description, sample, .add = FALSE)|>
-  mutate(weight = .5^(max(year)-year+1)/sum(.5^(max(year)-year+1)))
-
-
-occ_shares <- full_join(stokes_emp_occ, lfs_emp_occ)
-
-occ_shares_weighted <- occ_shares|>
-  summarize(weighted_mean=sum(weight*share))|>
-  pivot_wider(names_from = sample, values_from = weighted_mean)
-
-write_csv(occ_shares, here("out","occ_shares.csv"))
-write_csv(occ_shares_weighted, here("out","occ_shares_weighted.csv"))
-
-
-
-
-
-
-
+#
+#
+#
+# plt <- ggplot(errors, aes(rmse, smape, size=mean_value, colour=mean_value, alpha=mean_value, text=noc_5))+
+#   geom_point()+
+#   scale_x_continuous(trans="log10")+
+#   scale_y_continuous(trans="log10")+
+#   scale_colour_viridis_c()
+#
+# plotly::ggplotly(plt, tooltip = "text")
+#
+#
+# new_vs_fcast|>
+#   filter(str_detect(noc_5,"11100"))|>
+#   ggplot(aes(syear, .mean, colour=.model))+
+#   geom_line()+
+#   labs(x=NULL, y=NULL, colour=NULL)+
+#   scale_y_continuous(labels = scales::comma)
+#
+#
