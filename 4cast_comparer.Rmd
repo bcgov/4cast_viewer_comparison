@@ -22,48 +22,30 @@ my_dt <- function(tbbl) {
   DT::datatable(tbbl,
                 extensions = "Buttons",
                 rownames = FALSE,
-                filter="top",
                 options = list(
                   columnDefs = list(list(className = "dt-center", targets = "_all")),
                   paging = TRUE,
                   scrollX = TRUE,
                   scrollY = TRUE,
-                  searching = TRUE,
                   ordering = TRUE,
-                  dom = "Btip",
-                  buttons = list(
-                    list(extend = "csv", filename = "top_5_cor_education"),
-                    list(extend = "excel", filename = "top_5_cor_education")
-                  ),
-                  pageLength = 64,
-                  lengthMenu = c(3, 5)
+                  dom = "t",
+                  pageLength = 64
                 )
   )
 }
-symmetric_change <- function(old, new) {
-  denom <- (old + new) / 2
-  result <- ifelse(denom == 0 & new != old, 200 * sign(new - old),
-                   ifelse(denom == 0, 0, (new - old) / denom * 100))
-  return(result)
-}
-percent_level_change <- function(tbbl){
-  old <- sum(tbbl$original_value)
-  new <- sum(tbbl$new_value)
-  symmetric_change(old, new)
+
+get_rmse <- function(tbbl){
+  sqrt(mean((tbbl$new-tbbl$original)^2))
 }
 
-how_big <- function(tbbl){
-  mean(tbbl$new_value)
+get_smape <- function(tbbl){
+  mean(abs(tbbl$new-tbbl$original)/(abs(tbbl$new)+abs(tbbl$original)))
 }
 
-percent_cagr_change <- function(tbbl){
-  tbbl <- tbbl|>
-    mutate(year=as.numeric(year))|>
-    arrange(year)
-  new <- (last(tbbl$new_value)/first(tbbl$new_value))^(1/(last(tbbl$year)-first(tbbl$year)))
-  old <-(last(tbbl$original_value)/first(tbbl$original_value))^(1/(last(tbbl$year)-first(tbbl$year)))
-  symmetric_change(old, new)
+get_mean <- function(tbbl){
+  (mean(tbbl$new)+mean(tbbl$original))/2
 }
+
 ```
 
 ```{r}
@@ -71,25 +53,27 @@ new_vs_old <- read_rds(here("out","new_vs_old.rds"))
 files <- sort(unique(new_vs_old$which_file), decreasing = TRUE)
 new_vs_fcast <- read_rds(here("out","new_vs_fcast.rds"))
 errors <- read_rds(here("out","errors.rds"))
+census <- read_rds(here("out", "census.rds"))
+lfs_means <- read_rds(here("out","lfs_means.rds"))
+prop_data <- read_rds(here("out","prop_data.rds"))
 ```
 
 # Comparison with previous cut
 
-## Inputs {.sidebar data-width="300"}
+## Inputs {.sidebar data-width="350"}
 
--   This app allows for two comparisons:
+-   Here we compare the current $C_t$ and previous Stokes forecasts $P_t$, using two metrics.
 
-1)  between two Stokes occupational forecasts.
-2)  between the current Stokes occupational employment forecast and historic LFS data.
+$${\displaystyle \operatorname {RMSE} ={\sqrt {{\frac {1}{n}}\sum _{t=1}^{n}(C_{t}-P_{t})^{2}}}}$$
 
--   For the chart to the immediate left, we create 3 summary statistics for the selected data
+-  Note that RMSE is a scale dependent metric: the same proportional difference (e.g. 10%) yields a larger RMSE for larger occupations.
 
-1)  The percentage difference in the mean level (across 10 years)
-2)  The percentage difference in 10 year growth rates
-3)  The size of the "slice" of data (i.e. the size of industry or occupation.)
+$${\displaystyle {\text{SMAPE}}={\frac {1}{n}}\sum _{t=1}^{n}{\frac {|C_{t}-P_{t}|}{|C_{t}|+|P_{t}|}}}$$
 
--   For points close the origin, Stokes has not made changes that affect either the level or the growth rate.
--   For points far away from the origin, there has been a substantial change (in percentage terms.)
+-  In contrast, SMAPE is a scale independant metric: Note that the same absolute difference (e.g. 1000) yields a larger SMAPE for *smaller* occupations. 
+
+- In the scatter plot to the right we can see that similar forecast bottom left, different forecasts top right.  Occupation size by size and colour. 
+
 
 ```{r}
 selectInput(
@@ -124,7 +108,7 @@ selectInput(
 )
 })
 
-checkboxInput("origin", "Are you Sazid? (should y axis include the origin)", value = FALSE)
+checkboxInput("origin", "Include the origin?", value = FALSE)
 
 #reactive elements------------------------------
 
@@ -153,12 +137,14 @@ reactive_tbbl <- reactive({
   reactive_base()|>
     mutate(year=as.numeric(year))|>
     filter(year >= max(year)-10)|>
-  group_by(slice)|>
-  nest()|>
-  mutate(percent_level_change=map_dbl(data, percent_level_change),
-         percent_cagr_change=map_dbl(data, percent_cagr_change),
-         mean_level=map_dbl(data, how_big))|>
-  unnest(data)
+    group_by(slice)|>
+    nest()|>
+    mutate(rmse=map_dbl(data, get_rmse),
+           smape=map_dbl(data, get_smape),
+           mean_value=map_dbl(data, get_mean)
+          )|>
+  arrange(desc(mean_value))|>
+  select(-data)
 })
 ```
 
@@ -179,25 +165,16 @@ function(el, x) {
 plotly::renderPlotly({
   req(input$variable)
   req(input$geographic_area)
+
   plt <- reactive_tbbl()|>
-  select(slice, starts_with("percent"), mean_level)|>
-  distinct()|>
-  ggplot(aes(percent_level_change,
-             percent_cagr_change,
-             size=mean_level,
-             alpha=mean_level,
-             colour=mean_level,
-             text=slice))+
-  geom_vline(xintercept = 0, colour="white", lwd=2)+
-  geom_hline(yintercept = 0, colour="white", lwd=2)+ 
+    ggplot(aes(rmse, smape, size=mean_value, colour=mean_value, alpha=mean_value, text=slice))+
   geom_point()+
-  scale_colour_viridis_c()+
-  labs(x="Level Change (%)",
-       y="Growth Change (%)",
-       colour="Mean Level (new)")
+  scale_x_continuous(trans="log10")+
+  scale_y_continuous(trans="log10")+
+  scale_colour_viridis_c(labels=scales::comma)+
+  labs(x="Root Mean Squared Error", y="Symmetric Mean Absolute Percentage Error", colour=NULL)
 
-
-plotly::ggplotly(plt, tooltip = "text")|>
+  plotly::ggplotly(plt, tooltip = "text")|>
      plotly::config(displayModeBar = FALSE)|>
      onRender(js)
 })
@@ -209,59 +186,57 @@ plotly::ggplotly(plt, tooltip = "text")|>
 
 ```{r}
 plotly::renderPlotly({
-  req(input$point)
+  req(input$point$text)
   plt <- reactive_base()|>
     filter(slice==input$point$text)|>
-    pivot_longer(cols = c(new_value, original_value))|>
+    pivot_longer(cols = c("new","original"))|>
     mutate(year=as.numeric(year))|>
-    ggplot(aes(year,
-               value,
-               colour=name,
-               text=slice))+
+    ggplot(aes(year, value, colour=name))+
     geom_line()+
-    scale_y_continuous(labels=scales::comma)+
-    labs(x=NULL,y=NULL, colour=NULL)
-  
+    labs(x=NULL, y=NULL, colour=NULL)+
+    scale_y_continuous(labels = scales::comma)+
+    scale_colour_brewer(palette = "Dark2")
+
   if(input$origin==TRUE){
     plt <- plt+ 
       expand_limits(y = 0)
   }
-
-  plotly::ggplotly(plt)
+  
+  plotly::ggplotly(plt)   
 })
+
+
 ```
 
 ### `r renderUI({input$point$text})`
 
 ```{r}
+
 DT::renderDT({
-  req(input$point)
-  reactive_tbbl()|>
+  req(input$point$text)
+  reactive_base()|>
     filter(slice==input$point$text)|>
-    ungroup()|>
-    select(-slice)|>
-    mutate(across(everything(), round, 2))|>
-    DT::datatable(rownames = FALSE)
+    DT::datatable()
 })
+
 ```
 
-# Comparison with ensemble forecast
+# Comparison with Rich's forecast
 
 ## Inputs {.sidebar data-width="300"}
 
--   On this page we compare the most recent Stokes forecast $S_t$ with an ensemble forecast $E_t$ based on LFS data since 2000.
--   The ensemble forecast is based on 50/50 mixture of two component forecasts:
+-   Here we compare the most recent Stokes forecast with Rich's forecast.
+-   Rich's forecast is based on LFS and Census NOC *proportions*, and the bottom-line aka aggregate employment forecast.  
 
-1)  TSLM: Linear regression of employment on time.
-2)  ETS: [Exponential Smoothing](https://otexts.com/fpp3/expsmooth.html)
+### Rich's forecast recipe:
 
--   We use two metrics to compare the stokes forecast with the ensemble forecast, which are displayed in the scatterplot to the right.
-
-$${\displaystyle \operatorname {RMSE} ={\sqrt {{\frac {1}{n}}\sum _{t=1}^{n}(S_{t}-E_{t})^{2}}}}$$
-
-$${\displaystyle {\text{SMAPE}}={\frac {1}{n}}\sum _{t=1}^{n}{\frac {|S_{t}-E_{t}|}{|E_{t}|+|S_{t}|}}}$$
-
-- Bottom left forecasts are similar, top right the forecasts differ.
+1)  Calculate the NOC proportions for the LFS (annual), and Census 2021.
+2)  Calculate the average LFS NOC proportions over the period 2018:2024.
+3)  Re-scale the LFS proportions by multiplying them by the Census proportion and dividing them by the average LFS proportion above.
+4) Normalize the re-scaled LFS proportions so they sum to one.
+5) Create an ensemble forecast of the normalized proportions (TSLS and ETS)
+6) Normalize the ensemble proportion forecasts so they sum to one.
+7) Apply these normalized proportions to the bottom-line aka aggregate employment forecast. 
 
 
 ## Column
@@ -283,7 +258,8 @@ plotly::renderPlotly({
   geom_point()+
   scale_x_continuous(trans="log10")+
   scale_y_continuous(trans="log10")+
-  scale_colour_viridis_c()
+  scale_colour_viridis_c(labels=scales::comma)+
+  labs(x="Root Mean Squared Error", y="Symmetric Mean Absolute Percentage Error", colour=NULL)
 
   plotly::ggplotly(plt, tooltip = "text")|>
      plotly::config(displayModeBar = FALSE)|>
@@ -294,33 +270,48 @@ plotly::renderPlotly({
 
 ## Column
 
-###  `r renderUI({input$point2$text})`
+### `r renderUI({paste("Employment Share (re-scaled)", input$point2$text, sep=": ")})`
+
+
+```{r}
+plotly::renderPlotly({
+  req(input$point2$text)
+  plt <- prop_data|>
+    filter(noc_5==input$point2$text)|>
+    ggplot(aes(year, prop, colour=series))+
+    geom_line()+
+    labs(x=NULL, y=NULL, colour=NULL)+
+    scale_y_continuous(labels = scales::percent)+
+    scale_colour_brewer(palette = "Dark2")
+  
+  if(input$origin==TRUE){
+    plt <- plt+ 
+      expand_limits(y = 0)
+  }
+  
+  plotly::ggplotly(plt)
+})
+```
+
+### `r renderUI({paste("Employment Level", input$point2$text, sep=": ")})`
 
 ```{r}
 plotly::renderPlotly({
   req(input$point2$text)
   plt <- new_vs_fcast|>
     filter(noc_5==input$point2$text)|>
-    ggplot(aes(syear, .mean, colour=.model))+
-    geom_line()+
+    ggplot()+
+    geom_point(data=census|>filter(noc_5==input$point2$text), mapping = aes(year, value, text="Census"))+
+    geom_line(aes(year, value, colour=series))+
+    scale_colour_brewer(palette = "Dark2")+
     labs(x=NULL, y=NULL, colour=NULL)+
     scale_y_continuous(labels = scales::comma)
+  
+  if(input$origin==TRUE){
+    plt <- plt+ 
+      expand_limits(y = 0)
+  }
   plotly::ggplotly(plt)
-})
-```
-
-### `r renderUI({input$point2$text})`
-
-```{r}
-DT::renderDT({
-  req(input$point2$text)
-  new_vs_fcast|>
-    filter(noc_5==input$point2$text)|>
-    ungroup()|>
-    select(year=syear, value=.mean, series=.model)|>
-    mutate(value=round(value))|>
-    arrange(year)|>
-    DT::datatable(rownames = FALSE)
 })
 ```
 

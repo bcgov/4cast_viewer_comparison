@@ -19,15 +19,15 @@ conflicts_prefer(dplyr::filter)
 conflicts_prefer(dplyr::lag)
 #functions--------------------
 get_rmse <- function(tbbl){
-  sqrt(mean((tbbl$stokes-tbbl$`ensemble forecast`)^2))
+  sqrt(mean((tbbl$Stokes-tbbl$Rich)^2))
 }
 
 get_smape <- function(tbbl){
-  mean(abs(tbbl$stokes-tbbl$`ensemble forecast`)/(abs(tbbl$stokes)+abs(tbbl$`ensemble forecast`)))
+  mean(abs(tbbl$Stokes-tbbl$Rich)/(abs(tbbl$Stokes)+abs(tbbl$Rich)))
 }
 
 get_mean <- function(tbbl){
-  (mean(tbbl$stokes)+mean(tbbl$`ensemble forecast`))/2
+  (mean(tbbl$Stokes)+mean(tbbl$Rich))/2
 }
 
 fix_noc <- function(tbbl){
@@ -40,8 +40,8 @@ fix_noc <- function(tbbl){
 new_vs_old <- tibble(which_file=list.files(here("data","occupation_new")))|>
   mutate(new_data=map(here("data","occupation_new", which_file), read_excel, skip=3, na="NA", col_types=c(rep("text",5), rep("numeric",14))),
          old_data=map(here("data","occupation_old", which_file), read_excel, skip=3, na="NA", col_types=c(rep("text",5), rep("numeric",13))),
-         new_data=map(new_data, pivot_longer, cols=starts_with("2"), names_to="year", values_to="new_value"),
-         old_data=map(old_data, pivot_longer, cols=starts_with("2"), names_to="year", values_to="original_value"),
+         new_data=map(new_data, pivot_longer, cols=starts_with("2"), names_to="year", values_to="new"),
+         old_data=map(old_data, pivot_longer, cols=starts_with("2"), names_to="year", values_to="original"),
          old_data=map(old_data, fix_noc),#for some reason the NOCs were f'd up ????
          new_data=map(new_data, fix_noc)#for some reason the NOCs were f'd up ????
          )|>
@@ -51,21 +51,32 @@ new_vs_old <- tibble(which_file=list.files(here("data","occupation_new")))|>
 write_rds(new_vs_old, here("out","new_vs_old.rds"))
 
 # comparison with an ensemble forecast---------------------
-noc_names <- read_excel(here("data","occupation_new", "employment_occupation.xlsx"), skip=3)|>
+
+stokes_raw <- read_excel(here("data","occupation_new", "employment_occupation.xlsx"), skip=3)
+
+stokes_top <- stokes_raw|>
+  filter(NOC=="#T",
+         `Geographic Area`=="British Columbia")|>
+  pivot_longer(cols=starts_with("2"), names_to = "year", values_to = "stokes_top")|>
+  select(year, stokes_top)|>
+  mutate(year=as.numeric(year))|>
+  filter(year>max(year)-10)
+
+noc_names <- stokes_raw|>
   select(NOC, Description)|>
   distinct()|>
   mutate(noc_5=paste(NOC, Description, sep=": "))
 
-stokes <- read_excel(here("data","occupation_new", "employment_occupation.xlsx"), skip=3)|>
+stokes <- stokes_raw|>
   filter(`Geographic Area`=="British Columbia")|>
-  pivot_longer(cols=starts_with("2"), names_to = "syear")|>
+  pivot_longer(cols=starts_with("2"), names_to = "year", values_to = "stokes")|>
   clean_names()|>
-  mutate(syear=as.numeric(syear))|>
+  mutate(year=as.numeric(year))|>
   filter(noc!="#T",
-         syear>max(syear)-10)|>
-  mutate(noc_5=paste(noc, description, sep=": "),
-         .model="stokes")|>
-  select(noc_5, syear, .model, .mean=value)
+         year>max(year)-10)|>
+  group_by(year)|>
+  mutate(noc_5=paste(noc, description, sep=": "))|>
+  select(year, noc_5, Stokes=stokes)
 
 lfs <- vroom(list.files(here("data", "LFS"), full.names = TRUE))|>
   clean_names()|>
@@ -75,77 +86,108 @@ lfs <- vroom(list.files(here("data", "LFS"), full.names = TRUE))|>
   group_by(noc_5)|>
   mutate(nobs=n())|>
   ungroup()|>
-  filter(nobs==max(nobs))|>
+  filter(nobs==max(nobs),
+         syear<max(syear))|>
   select(-nobs)|>
   mutate(noc_5=if_else(noc_5 %in% paste0("000",11:15), "00018", noc_5),
-         noc=paste0("#",noc_5))|>
-  group_by(syear, noc)|>
-  summarize(count=sum(count))|>
+         noc=paste0("#",noc_5),
+         series="LFS")|>
+  group_by(syear, noc, series)|>
+  summarize(value=sum(count)/12)|>
   left_join(noc_names, by=c("noc"="NOC"))|>
-  select(-noc, -Description)
-
-lfs_tsibble <- lfs|>
   ungroup()|>
-  filter(syear<max(syear))|>
-  mutate(count=count/12)|>
-  tsibble(key = noc_5, index = syear)|>
-  fill_gaps(count=0L)
+  select(year=syear, noc_5, series, value)
 
-models <- lfs_tsibble %>%
+lfs_props <- lfs|>
+  select(-series)|>
+  mutate(lfs_prop=value/sum(value))|>
+  select(-value)
+
+lfs_2021_props <- lfs_props|>
+  filter(year %in% 2018:2024)|>
+  group_by(noc_5)|>
+  summarize(lfs_2021_prop=mean(lfs_prop))
+
+lfs_props <- full_join(lfs_props, lfs_2021_props)
+
+census_raw <- readxl::read_excel(here("data", "census.xlsx"))
+colnames(census_raw)[1] <- "lmo_noc"
+
+census <- census_raw|>
+  separate(lmo_noc, into = c("lmo_noc", "description"), sep = " ", extra="merge")|>
+  select(-description)|>
+  mutate(lmo_noc=paste0("#",lmo_noc))|>
+  inner_join(noc_names, by=c("lmo_noc"="NOC"))|>
+  select(noc_5, value=`All industries`)|>
+  distinct()|>
+  mutate(year=2021,
+         series="Census")|>
+  mutate(census_prop=value/sum(value))
+
+census|>
+  select(year, noc_5, value, series)|>
+  write_rds(here("out", "census.rds"))
+
+lfs_props <- inner_join(lfs_props, census|>select(noc_5, census_prop))|>
+  mutate(lfs_adjusted_prop=if_else(lfs_2021_prop>0, lfs_prop*census_prop/lfs_2021_prop, census_prop))|>
+  group_by(year)|>
+  mutate(lfs_final_prop=lfs_adjusted_prop/sum(lfs_adjusted_prop),
+         series="LFS")|>
+  select(noc_5, year, prop=lfs_final_prop, series)|>
+  ungroup()|>
+  as_tsibble(key=noc_5, index=year)
+
+models <- lfs_props %>%
   model(
-    ets = ETS(count),
-    tslm=TSLM(count~trend())
+    ets = ETS(prop~trend("Ad")),
+    tslm=TSLM(prop~trend())
   )
 
 fcasts <- models %>%
   forecast(h = "10 years")|>
   tibble()|>
-  mutate(.mean=if_else(.mean<0, 0, .mean))|>
-  select(-count)
+  mutate(fcast_prop=if_else(.mean<0, 0, .mean))|>
+  group_by(noc_5, year)|>
+  summarize(fcast_prop=mean(fcast_prop))|>
+  group_by(year)|>
+  mutate(prop=fcast_prop/sum(fcast_prop))|>
+  select(year, noc_5, prop)|>
+  mutate(series="Rich")
 
-ensemble_fcasts <- fcasts|>
-  group_by(noc_5, syear)|>
-  summarize(.mean=mean(.mean),
-            .model="ensemble forecast")
+stokes_prop <- stokes|>
+  group_by(year)|>
+  mutate(prop=Stokes/sum(Stokes),
+         series="Stokes")|>
+  select(-Stokes)
 
-lfs <- lfs_tsibble|>
-  rename(.mean=count)|>
-  mutate(.model="LFS")
+bind_rows(lfs_props|>as_tibble(), fcasts, stokes_prop)|>
+  write_rds(here("out","prop_data.rds"))
 
-new_vs_fcast <- bind_rows(ensemble_fcasts, lfs, stokes)
+level_fcast <- inner_join(stokes_top, fcasts)|>
+  mutate(Rich=stokes_top*prop)|>
+  select(year,noc_5, Rich)
 
-errors <- new_vs_fcast|>
-  pivot_wider(names_from = ".model", values_from = ".mean")|>
-  select(-LFS)|>
-  na.omit()|>
+ensemble_vs_stokes <- inner_join(level_fcast, stokes)
+
+errors <- ensemble_vs_stokes|>
   group_by(noc_5)|>
   nest()|>
   mutate(rmse=map_dbl(data, get_rmse),
          smape=map_dbl(data, get_smape),
          mean_value=map_dbl(data, get_mean)
          )|>
-  arrange(desc(mean_value))
+  arrange(desc(mean_value))|>
+  select(-data)
+
+new_vs_fcast <- ensemble_vs_stokes|>
+  pivot_longer(cols=c(Stokes, Rich), names_to = "series", values_to = "value")|>
+  bind_rows(lfs)
 
 write_rds(new_vs_fcast, here("out","new_vs_fcast.rds"))
 write_rds(errors, here("out","errors.rds"))
 
-#
-#
-#
-# plt <- ggplot(errors, aes(rmse, smape, size=mean_value, colour=mean_value, alpha=mean_value, text=noc_5))+
-#   geom_point()+
-#   scale_x_continuous(trans="log10")+
-#   scale_y_continuous(trans="log10")+
-#   scale_colour_viridis_c()
-#
-# plotly::ggplotly(plt, tooltip = "text")
-#
-#
-# new_vs_fcast|>
-#   filter(str_detect(noc_5,"11100"))|>
-#   ggplot(aes(syear, .mean, colour=.model))+
-#   geom_line()+
-#   labs(x=NULL, y=NULL, colour=NULL)+
-#   scale_y_continuous(labels = scales::comma)
-#
-#
+
+
+
+
+
