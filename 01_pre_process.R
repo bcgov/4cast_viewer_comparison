@@ -125,7 +125,7 @@ census <- census_raw|>
   mutate(census_prop=value/sum(value))
 
 census|>
-  select(year, noc_5, value, series)|>
+  select(year, noc_5, value, series, prop=census_prop)|>
   write_rds(here("out", "census.rds"))
 
 lfs_props <- inner_join(lfs_props, census|>select(noc_5, census_prop))|>

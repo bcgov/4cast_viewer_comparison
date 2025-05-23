@@ -62,17 +62,17 @@ prop_data <- read_rds(here("out","prop_data.rds"))
 
 ## Inputs {.sidebar data-width="350"}
 
--   Here we compare the current $C_t$ and previous Stokes forecasts $P_t$, using two metrics.
+-  We are interested in identifying occupations where the Stokes current $C_t$ and previous $P_t$ cuts differ significantly both in absolute and relative terms. 
 
-$${\displaystyle \operatorname {RMSE} ={\sqrt {{\frac {1}{n}}\sum _{t=1}^{n}(C_{t}-P_{t})^{2}}}}$$
+- The root mean square error measures absolute differences:
 
--  Note that RMSE is a scale dependent metric: the same proportional difference (e.g. 10%) yields a larger RMSE for larger occupations.
+1)  $${\displaystyle \operatorname {RMSE} ={\sqrt {{\frac {1}{n}}\sum _{t=1}^{n}(C_{t}-P_{t})^{2}}}}$$
 
-$${\displaystyle {\text{SMAPE}}={\frac {1}{n}}\sum _{t=1}^{n}{\frac {|C_{t}-P_{t}|}{|C_{t}|+|P_{t}|}}}$$
+-  In contrast the symmetric mean absolute percent error measures relative differences.
 
--  In contrast, SMAPE is a scale independant metric: Note that the same absolute difference (e.g. 1000) yields a larger SMAPE for *smaller* occupations. 
+2)  $${\displaystyle {\text{SMAPE}}={\frac {1}{n}}\sum _{t=1}^{n}{\frac {|C_{t}-P_{t}|}{|C_{t}|+|P_{t}|}}}$$
 
-- In the scatter plot to the right we can see that similar forecast bottom left, different forecasts top right.  Occupation size by size and colour. 
+- Similar forecast (small absolute and relative differences) can be found in the bottom left, different forecasts (large absolute and relative differences) top right.   
 
 
 ```{r}
@@ -167,7 +167,13 @@ plotly::renderPlotly({
   req(input$geographic_area)
 
   plt <- reactive_tbbl()|>
-    ggplot(aes(rmse, smape, size=mean_value, colour=mean_value, alpha=mean_value, text=slice))+
+    ggplot(aes(rmse, 
+               smape, 
+               size=mean_value, 
+               colour=mean_value, 
+               alpha=mean_value, 
+               text=slice)
+           )+
   geom_point()+
   scale_x_continuous(trans="log10")+
   scale_y_continuous(trans="log10")+
@@ -278,8 +284,9 @@ plotly::renderPlotly({
   req(input$point2$text)
   plt <- prop_data|>
     filter(noc_5==input$point2$text)|>
-    ggplot(aes(year, prop, colour=series))+
-    geom_line()+
+    ggplot()+
+    geom_point(data=census|>filter(noc_5==input$point2$text), mapping = aes(year, prop, text="Census"))+
+    geom_line(aes(year, prop, colour=series))+
     labs(x=NULL, y=NULL, colour=NULL)+
     scale_y_continuous(labels = scales::percent)+
     scale_colour_brewer(palette = "Dark2")
