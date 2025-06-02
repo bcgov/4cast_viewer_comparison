@@ -104,7 +104,8 @@ lfs_props <- lfs|>
   select(-value)
 
 lfs_2021_props <- lfs_props|>
-  filter(year %in% 2018:2024)|>
+  filter(year %in% 2020:2022)|>
+#  filter(year == 2021)|>
   group_by(noc_5)|>
   summarize(lfs_2021_prop=mean(lfs_prop))
 

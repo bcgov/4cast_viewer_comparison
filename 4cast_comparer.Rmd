@@ -5,6 +5,13 @@ output:
     source_code: https://github.com/bcgov/4cast_viewer_comparison
     orientation: columns
 runtime: shiny
+resource_files:
+- out/census.rds
+- out/errors.rds
+- out/lfs_means.rds
+- out/new_vs_fcast.rds
+- out/new_vs_old.rds
+- out/prop_data.rds
 ---
 
 ```{r, include=FALSE}
@@ -196,8 +203,22 @@ plotly::renderPlotly({
   plt <- reactive_base()|>
     filter(slice==input$point$text)|>
     pivot_longer(cols = c("new","original"))|>
-    mutate(year=as.numeric(year))|>
-    ggplot(aes(year, value, colour=name))+
+    group_by(name)|>
+    mutate(year=as.numeric(year),
+           cagr=(tail(value, n=1)/head(value, n=1))^(1/(max(year)-min(year))) - 1,
+           )|>
+    ggplot(aes(year, 
+               value, 
+               colour=name,
+               group=name,
+               text=paste0(
+                 "Year: ", year, "<br>",
+                 "Value: ", scales::comma(value), "<br>",
+                 "Series: ", name, "<br>",
+                 "CAGR: ", scales::percent(cagr, accuracy = 0.1)
+                 )
+               )
+           )+
     geom_line()+
     labs(x=NULL, y=NULL, colour=NULL)+
     scale_y_continuous(labels = scales::comma)+
@@ -208,7 +229,7 @@ plotly::renderPlotly({
       expand_limits(y = 0)
   }
   
-  plotly::ggplotly(plt)   
+  plotly::ggplotly(plt, tooltip = "text")   
 })
 
 
@@ -231,19 +252,23 @@ DT::renderDT({
 
 ## Inputs {.sidebar data-width="300"}
 
--   Here we compare the most recent Stokes forecast with Rich's forecast.
+-   We have no alternative forecast to compare with Stokes... so make one up.
 -   Rich's forecast is based on LFS and Census NOC *proportions*, and the bottom-line aka aggregate employment forecast.  
 
 ### Rich's forecast recipe:
 
 1)  Calculate the NOC proportions for the LFS (annual), and Census 2021.
-2)  Calculate the average LFS NOC proportions over the period 2018:2024.
-3)  Re-scale the LFS proportions by multiplying them by the Census proportion and dividing them by the average LFS proportion above.
+2)  Calculate the average LFS NOC proportions over the period 2020:2022. (3 years centered on census 2021.)
+3)  Re-scale the LFS proportions by multiplying them by the Census proportion and dividing them by the average LFS proportion calculated in 2).
 4) Normalize the re-scaled LFS proportions so they sum to one.
 5) Create an ensemble forecast of the normalized proportions (TSLS and ETS)
 6) Normalize the ensemble proportion forecasts so they sum to one.
 7) Apply these normalized proportions to the bottom-line aka aggregate employment forecast. 
 
+### Why?
+
+-  Forecast proportions so aggregation is consistent with the bottom-line forecast.
+-  Census to inform levels, LFS for trends.
 
 ## Column
 
@@ -276,7 +301,7 @@ plotly::renderPlotly({
 
 ## Column
 
-### `r renderUI({paste("Employment Share (re-scaled)", input$point2$text, sep=": ")})`
+### `r renderUI({paste("Employment Share (LFS re-scaled)", input$point2$text, sep=": ")})`
 
 
 ```{r}
@@ -307,9 +332,22 @@ plotly::renderPlotly({
   req(input$point2$text)
   plt <- new_vs_fcast|>
     filter(noc_5==input$point2$text)|>
+    group_by(series)|>
+    mutate(year=as.numeric(year),
+           cagr=(tail(value, n=1)/head(value, n=1))^(1/(max(year)-min(year))) - 1
+           )|>
     ggplot()+
     geom_point(data=census|>filter(noc_5==input$point2$text), mapping = aes(year, value, text="Census"))+
-    geom_line(aes(year, value, colour=series))+
+    geom_line(aes(year, 
+                  value, 
+                  colour=series, 
+                  group=series, 
+                  text=paste0(
+                 "Year: ", year, "<br>",
+                 "Value: ", scales::comma(value), "<br>",
+                 "Series: ", series, "<br>",
+                 "CAGR: ", scales::percent(cagr, accuracy = 0.1)
+                 )))+
     scale_colour_brewer(palette = "Dark2")+
     labs(x=NULL, y=NULL, colour=NULL)+
     scale_y_continuous(labels = scales::comma)
@@ -318,7 +356,7 @@ plotly::renderPlotly({
     plt <- plt+ 
       expand_limits(y = 0)
   }
-  plotly::ggplotly(plt)
+  plotly::ggplotly(plt, tooltip = "text")
 })
 ```
 
