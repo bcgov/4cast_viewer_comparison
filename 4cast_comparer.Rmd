@@ -63,6 +63,7 @@ errors <- read_rds(here("out","errors.rds"))
 census <- read_rds(here("out", "census.rds"))
 lfs_means <- read_rds(here("out","lfs_means.rds"))
 prop_data <- read_rds(here("out","prop_data.rds"))
+nocs <- sort(unique(errors$noc_5))
 ```
 
 # Comparison with previous cut
@@ -71,15 +72,15 @@ prop_data <- read_rds(here("out","prop_data.rds"))
 
 -  We are interested in identifying occupations where the Stokes current $C_t$ and previous $P_t$ cuts differ significantly both in absolute and relative terms. 
 
-- The root mean square error measures absolute differences:
+- RMSE: absolute differences:
 
 1)  $${\displaystyle \operatorname {RMSE} ={\sqrt {{\frac {1}{n}}\sum _{t=1}^{n}(C_{t}-P_{t})^{2}}}}$$
 
--  In contrast the symmetric mean absolute percent error measures relative differences.
+-  SMAPE: relative differences.
 
 2)  $${\displaystyle {\text{SMAPE}}={\frac {1}{n}}\sum _{t=1}^{n}{\frac {|C_{t}-P_{t}|}{|C_{t}|+|P_{t}|}}}$$
 
-- Similar forecast (small absolute and relative differences) can be found in the bottom left, different forecasts (large absolute and relative differences) top right.   
+- Similar forecast: bottom left, different forecasts: top right.   
 
 
 ```{r}
@@ -252,6 +253,17 @@ DT::renderDT({
 
 ## Inputs {.sidebar data-width="300"}
 
+```{r}
+selectInput(
+  "noc",
+  "Select an occupation",
+  nocs,
+  selected = nocs[1]
+)
+```
+
+
+
 -   We have no alternative forecast to compare with Stokes... so make one up.
 -   Rich's forecast is based on LFS and Census NOC *proportions*, and the bottom-line aka aggregate employment forecast.  
 
@@ -275,42 +287,33 @@ DT::renderDT({
 ### 
 
 ```{r}
-
-js2 <- "
-function(el, x) {
-  el.on('plotly_click', function(d) {
-    var point = d.points[0];
-    Shiny.setInputValue('point2', {text: point.text});
-  });
-}"
-
 plotly::renderPlotly({
- plt <- ggplot(errors, aes(rmse, smape, size=mean_value, colour=mean_value, alpha=mean_value, text=noc_5))+
-  geom_point()+
+ plt <- ggplot()+
+  geom_point(data=errors, mapping=aes(rmse, smape, size=mean_value, colour=mean_value, alpha=mean_value, text=noc_5))+
+  geom_point(data=errors|>filter(noc_5==input$noc), mapping=aes(rmse, smape, size=mean_value/100))+
   scale_x_continuous(trans="log10")+
   scale_y_continuous(trans="log10")+
   scale_colour_viridis_c(labels=scales::comma)+
   labs(x="Root Mean Squared Error", y="Symmetric Mean Absolute Percentage Error", colour=NULL)
 
   plotly::ggplotly(plt, tooltip = "text")|>
-     plotly::config(displayModeBar = FALSE)|>
-     onRender(js2)
+     plotly::config(displayModeBar = FALSE)
 })
 ```
 
 
 ## Column
 
-### `r renderUI({paste("Employment Share (LFS re-scaled)", input$point2$text, sep=": ")})`
+### `r renderUI({paste("Employment Share (LFS re-scaled)", input$noc, sep=": ")})`
 
 
 ```{r}
 plotly::renderPlotly({
-  req(input$point2$text)
+  req(input$noc)
   plt <- prop_data|>
-    filter(noc_5==input$point2$text)|>
+    filter(noc_5==input$noc)|>
     ggplot()+
-    geom_point(data=census|>filter(noc_5==input$point2$text), mapping = aes(year, prop, text="Census"))+
+    geom_point(data=census|>filter(noc_5==input$noc), mapping = aes(year, prop, text="Census"))+
     geom_line(aes(year, prop, colour=series))+
     labs(x=NULL, y=NULL, colour=NULL)+
     scale_y_continuous(labels = scales::percent)+
@@ -325,19 +328,19 @@ plotly::renderPlotly({
 })
 ```
 
-### `r renderUI({paste("Employment Level", input$point2$text, sep=": ")})`
+### `r renderUI({paste("Employment Level", input$noc, sep=": ")})`
 
 ```{r}
 plotly::renderPlotly({
-  req(input$point2$text)
+  req(input$noc)
   plt <- new_vs_fcast|>
-    filter(noc_5==input$point2$text)|>
+    filter(noc_5==input$noc)|>
     group_by(series)|>
     mutate(year=as.numeric(year),
            cagr=(tail(value, n=1)/head(value, n=1))^(1/(max(year)-min(year))) - 1
            )|>
     ggplot()+
-    geom_point(data=census|>filter(noc_5==input$point2$text), 
+    geom_point(data=census|>filter(noc_5==input$noc), 
                mapping = aes(year, 
                              value, 
                              text=paste0(
