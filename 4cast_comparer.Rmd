@@ -337,7 +337,13 @@ plotly::renderPlotly({
            cagr=(tail(value, n=1)/head(value, n=1))^(1/(max(year)-min(year))) - 1
            )|>
     ggplot()+
-    geom_point(data=census|>filter(noc_5==input$point2$text), mapping = aes(year, value, text="Census"))+
+    geom_point(data=census|>filter(noc_5==input$point2$text), 
+               mapping = aes(year, 
+                             value, 
+                             text=paste0(
+                 "Year: ", year, "<br>",
+                 "Value: ", scales::comma(value), "<br>",
+                 "Series: Census")))+
     geom_line(aes(year, 
                   value, 
                   colour=series, 
